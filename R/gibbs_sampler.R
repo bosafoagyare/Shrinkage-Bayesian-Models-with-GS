@@ -1,6 +1,12 @@
 #(1) %%%%%%%%%%%%%% LOAD LIBRARIES %%%%%%%%%%%%%%
+#--------- Load algorithms script
+source("sslab.R")      # contains spike--and-slab algos
+source("blasso.R")     # contains Bayesian Lasso algos
+source("utils.R")      # contains utility functions
+
+#--------- Load, otherwise install and load packages
 if (!require("pacman")) install.packages("pacman")
-pacman::p_load(lars, tidyverse, foreach, coda)
+pacman::p_load(lars, tidyverse, foreach, coda, glmnet)
 
 
 #--------- Check for OS and install/load appropriate parallel package
@@ -26,16 +32,8 @@ if(Sys.info()["sysname"] == "Windows") stopCluster(cl)
 
 
 
-#(2) %%%%%%%% UTILS %%%%%%%%%%%%%%%%%
-#------- Data generators
-beta.true <- function(){
-  temp <- rep(0,(p*5))
-  p.nz <- ceiling(5*p*s)
-  if(p.nz>0){
-    temp[1:p.nz] <- rt(p.nz,2)
-  }
-  return(temp)
-}
+
+
 
 
 

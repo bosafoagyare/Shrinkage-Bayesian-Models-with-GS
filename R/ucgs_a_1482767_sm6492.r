@@ -76,6 +76,10 @@ rinvgaussian <- function(n,m,l){
 	sqrt(m*l)*rinvgauss.(n,m.,l.)
 }
 
+set.seed(5)
+rinvgaussian(5, 2,3)
+
+
 # Gibbs iteration functions for both Bayesian lassos
 # Note: The versions have separate functions, as opposed to being different
 #       options of the same function, since the latter would require checking any such
