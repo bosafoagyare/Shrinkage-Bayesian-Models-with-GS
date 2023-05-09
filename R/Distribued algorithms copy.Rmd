@@ -1,0 +1,1015 @@
+---
+title: "Distributed/ Divide & Conquer"
+output: html_document
+date: "2023-04-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# (8.1)--------------- Divide & Conquer/Distributed I (With Nystrom)------
+
+## APPROACH
+
+The divide and conquer approach to approximating kernels is a technique that involves dividing the data into smaller subsets and computing the kernel matrix for each subset separately. The smaller kernel matrices are then combined to approximate the original kernel matrix.
+
+The basic idea behind this approach is that computing the kernel matrix for the entire dataset can be computationally expensive, especially for large datasets. By dividing the dataset into smaller subsets, we can reduce the computational complexity of computing the kernel matrix for each subset. We can then combine the smaller kernel matrices to obtain an approximation of the original kernel matrix.
+
+There are several ways to divide the data into subsets, including random partitioning, hierarchical clustering, and k-means clustering. The choice of partitioning method will depend on the size and structure of the dataset, as well as the desired accuracy of the approximation.
+
+Once the data has been partitioned, we can compute the kernel matrix for each subset using any kernel approximation technique, such as Nystrom approximation, Random Kitchen Sinks, or Fastfood. The smaller kernel matrices can then be combined using a merging method such as the hierarchical merging algorithm or the banded matrix merging algorithm.
+
+The advantage of the divide and conquer approach is that it can reduce the computational complexity of computing the kernel matrix for large datasets, while still providing a reasonably accurate approximation. However, the approach may require more memory for storing the smaller kernel matrices and may be sensitive to the choice of partitioning method.
+
+```{r, eval=FALSE}
+# Generate random dataset
+n <- 10000
+d <- 10
+X <- matrix(rnorm(n * d), nrow = n, ncol = d)
+
+# Define kernel function
+kernel <- function(x1, x2) {
+  sigma <- 1
+  exp(-sum((x1 - x2)^2) / (2 * sigma^2))
+}
+
+# Define size of subsets
+subsetSize <- 1000
+
+# Partition data into subsets
+nSubsets <- n %/% subsetSize
+subsets <- lapply(seq_len(nSubsets), function(i) X[(i-1)*subsetSize + 1:i*subsetSize,])
+
+# Compute kernel matrix for each subset
+Ksubsets <- lapply(subsets, function(subset) {
+  nSubset <- nrow(subset)
+  Ksubset <- matrix(0, nrow = nSubset, ncol = n)
+  for (i in seq_len(nSubset)) {
+    for (j in seq_len(n)) {
+      Ksubset[i, j] <- kernel(subset[i, ], X[j, ])
+    }
+  }
+  Ksubset
+})
+
+# Merge smaller kernel matrices
+Kmerge <- matrix(0, nrow = n, ncol = n)
+for (k in seq_len(nSubsets)) {
+  Ksubset <- Ksubsets[[k]]
+  startRow <- (k - 1) * subsetSize + 1
+  endRow <- k * subsetSize
+  Kmerge[startRow:endRow, ] <- Kmerge[startRow:endRow, ] + Ksubset
+}
+Kmerge <- Kmerge / nSubsets
+
+# Compute Nystrom approximation
+m <- 100
+samples <- sample(n, m)
+C <- Kmerge[samples, samples]
+W <- Kmerge[samples, ] %*% solve(C) %*% t(Kmerge[samples, ])
+Kapprox <- W %*% C %*% t(W)
+
+# Compute Frobenius norm of error
+norm(Kapprox - Kmerge, "F")
+
+```
+
+> In this code, we generate a random dataset X and define a kernel function kernel. We then partition the data into subsets of size subsetSize, compute the kernel matrix for each subset, and merge the smaller kernel matrices using the average. We then use the merged kernel matrix to compute a Nystrom approximation with m = 100. Finally, we compute the Frobenius norm of the error between the approximation and the original kernel matrix.
+
+
+
+# (8.2)--------------- Divide & Conquer/Distributed II (by Zhang et. at)------
+
+## APPROACH
+The divide and conquer approach to approximating kernels is a technique proposed by Zhang et al. in 2013. This approach is based on recursively partitioning the input data into smaller subsets and then approximating the kernel matrix for each subset separately. The approximate kernel matrix for the entire dataset is then constructed by combining the approximate kernel matrices for each subset.
+
+The algorithm works as follows:
+
+- Partition the input data into k subsets of roughly equal size.    
+- Compute the approximate kernel matrix for each subset using any kernel.   approximation technique, such as random Fourier features or Nystrom approximation.
+- Compute the approximate kernel matrix for the entire dataset by combining the approximate kernel matrices for each subset.    
+- To do this, we first compute the cross-kernel matrix between each pair of subsets using the approximate kernel matrices for each subset.    
+- We then compute the kernel matrix for the entire dataset by combining these cross-kernel matrices using a weighted sum.     
+
+The key advantage of this approach is that it reduces the computational complexity of approximating the kernel matrix from O(n^2) to O(k^2 * (n/k)^2), which can be much faster if k is much smaller than n. Additionally, this approach can be parallelized by computing the approximate kernel matrices for each subset in parallel.
+
+However, the main challenge with this approach is selecting the appropriate value of k. A value of k that is too small can result in poor approximation accuracy, while a value that is too large can result in excessive computational complexity. One common approach is to start with a small value of k and gradually increase it until the approximation accuracy stabilizes.
+
+```{r, eval=FALSE}
+library(Matrix)
+library(parallel)
+
+# Compute the approximate kernel matrix for a subset of the data using Nystrom approximation
+# X_subset: subset of the data (n_subset x d)
+# X_full: full dataset (n x d)
+# k: number of landmarks
+# kernel_fun: kernel function
+nystrom_approximation <- function(X_subset, X_full, k, kernel_fun) {
+  n_subset <- nrow(X_subset)
+  n <- nrow(X_full)
+  
+  # Compute the kernel matrix between the subset and the full dataset
+  K_subset_full <- matrix(0, nrow = n_subset, ncol = n)
+  for (i in 1:n_subset) {
+    K_subset_full[i,] <- kernel_fun(X_subset[i,], X_full)
+  }
+  
+  # Compute the kernel matrix between the subset and itself
+  K_subset_subset <- kernel_fun(X_subset, X_subset)
+  
+  # Compute the Nystrom approximation of the kernel matrix
+  U <- qr.Q(qr(K_subset_subset))
+  S <- diag(nearPD(K_subset_subset)$eigenvalues[1:k])
+  V <- solve(S) %*% t(U) %*% K_subset_full
+  
+  # Compute the approximate kernel matrix
+  K_approx <- t(V) %*% V
+  
+  return(K_approx)
+}
+
+# Compute the approximate kernel matrix for the entire dataset using the divide and conquer approach
+# X: data matrix (n x d)
+# k: number of landmarks for each subset
+# kernel_fun: kernel function
+# num_cores: number of cores to use for parallelization
+divide_and_conquer_approximation <- function(X, k, kernel_fun, num_cores = 1) {
+  n <- nrow(X)
+  
+  # Divide the data into k subsets
+  subsets <- split(X, rep(1:k, length.out = n))
+  
+  # Compute the approximate kernel matrix for each subset
+  K_subsets <- mclapply(subsets, nystrom_approximation, X_full = X, k = k, kernel_fun = kernel_fun, mc.cores = num_cores)
+  
+  # Compute the cross-kernel matrix between each pair of subsets
+  n_subsets <- length(K_subsets)
+  K_cross <- matrix(0, nrow = n, ncol = n)
+  for (i in 1:n_subsets) {
+    for (j in (i+1):n_subsets) {
+      # Compute the kernel matrix between the ith and jth subset
+      K_ij <- kernel_fun(subsets[[i]], subsets[[j]])
+      
+      # Insert the kernel matrix into the cross-kernel matrix
+      indices_i <- (i-1)*k + 1 : i*k
+      indices_j <- (j-1)*k + 1 : j*k
+      K_cross[indices_i, indices_j] <- K_ij
+      K_cross[indices_j, indices_i] <- t(K_ij)
+    }
+  }
+  
+  # Compute the kernel matrix for the entire dataset
+  K_full <- (1/k^2) * rowSums(K_subsets) + (2/(k^2 * (n/k))) * rowSums(K_cross)
+  
+  return(K_full)
+}
+
+```
+
+> To use this code, you can simply call the divide_and_conquer_approximation function, passing in your data matrix X, the number of landmarks k, and the kernel function you wish to use.
+
+# (8.3)--------------- Divide & Conquer/Distributed III (by Zhang et. at)------
+
+## APPROACH
+The divide and conquer approach proposed by Zhang et al. in 2013 is a technique for approximating kernel matrices efficiently. Kernels are widely used in machine learning, but computing the kernel matrix for a large dataset can be computationally expensive. The divide and conquer approach aims to overcome this computational burden by dividing the dataset into smaller subsets and computing the kernel matrix for each subset separately.
+
+The basic idea behind the divide and conquer approach is to recursively divide the dataset into smaller subsets until the subsets are small enough to compute the kernel matrix efficiently. Once the subsets have been computed, they are combined using a hierarchical clustering algorithm to form the final kernel matrix approximation.
+
+The divide and conquer approach has several advantages over other methods for approximating kernel matrices. First, it can handle datasets with millions of data points, which is often not possible with other methods. Second, it is computationally efficient, as the computation can be parallelized over the subsets. Finally, the method is scalable, as the approximation error can be controlled by adjusting the size of the subsets.
+
+Overall, the divide and conquer approach proposed by Zhang et al. provides a practical and efficient way to compute kernel matrices for large datasets.
+
+```{r, eval=FALSE}
+# function to compute the kernel matrix for a subset of the data
+compute_kernel_subset <- function(X, start_idx, end_idx, kernel_fn) {
+  n <- end_idx - start_idx + 1
+  K <- matrix(0, nrow = n, ncol = n)
+  for (i in 1:n) {
+    for (j in 1:n) {
+      K[i,j] <- kernel_fn(X[start_idx+i-1,], X[start_idx+j-1,])
+    }
+  }
+  return(K)
+}
+
+# function to recursively divide and conquer the data and compute the kernel matrix approximation
+approximate_kernel <- function(X, kernel_fn, max_subset_size = 1000) {
+  n <- nrow(X)
+  if (n <= max_subset_size) {
+    # compute the kernel matrix directly if the subset size is small enough
+    K <- compute_kernel_subset(X, 1, n, kernel_fn)
+  } else {
+    # divide the data into two subsets
+    split_idx <- floor(n/2)
+    X_left <- X[1:split_idx,]
+    X_right <- X[(split_idx+1):n,]
+    
+    # recursively approximate the kernel matrix for each subset
+    K_left <- approximate_kernel(X_left, kernel_fn, max_subset_size)
+    K_right <- approximate_kernel(X_right, kernel_fn, max_subset_size)
+    
+    # combine the two subsets using hierarchical clustering and compute the final kernel matrix
+    K_combined <- rbind(cbind(K_left, kernel_fn(X_left, X_right)), cbind(kernel_fn(X_right, X_left), K_right))
+    hc <- hclust(as.dist(1-K_combined))
+    order <- hc$order
+    K <- K_combined[order, order]
+  }
+  return(K)
+}
+
+```
+
+> You can use this implementation by passing in your dataset X, the kernel function kernel_fn, and the maximum subset size max_subset_size. For example, to compute the kernel matrix for a dataset X using the Gaussian kernel with bandwidth 1 and a maximum subset size of 5000, you can use the following code:
+
+```{r, eval=FALSE}
+# define the Gaussian kernel function
+gaussian_kernel <- function(x, y) {
+  exp(-sum((x - y)^2)/(2*1^2))
+}
+
+# compute the kernel matrix approximation using the divide and conquer approach
+K_approx <- approximate_kernel(X, gaussian_kernel, max_subset_size = 5000)
+
+```
+
+> Here is an example of how to use the approximate kernel matrix to perform kernel PCA on a dataset:
+
+```{r, eval=FALSE}
+# center the kernel matrix
+n <- nrow(X)
+H <- diag(n) - rep(1/n, n) %*% matrix(1, nrow = n, ncol = n)
+K_centered <- H %*% K_approx %*% H
+
+# perform eigenvalue decomposition on the centered kernel matrix
+eig <- eigen(K_centered)
+
+# compute the top k eigenvectors and eigenvalues
+k <- 10
+alpha <- eig$vectors[, 1:k]
+lambda <- eig$values[1:k]
+
+# project the data onto the top k eigenvectors
+X_projected <- K_centered %*% alpha
+
+```
+
+
+# (8.4)--------------- Divide & Conquer/Distributed IV (by Zhang et. at)------
+
+## APPROACH
+The divide and conquer approach by Zhang et al. (2013) is a method for approximating kernels by averaging local estimates. Kernels are a fundamental tool in machine learning, used to measure the similarity between data points. However, computing kernels for large datasets can be computationally expensive, so approximating kernels can be useful for speeding up computations.
+
+The approach proposed by Zhang et al. involves dividing the dataset into smaller subsets, and approximating the kernel on each subset separately. The approximations are then combined by taking a weighted average, where the weights are determined by the similarity between the subsets.
+
+More specifically, the approach involves the following steps:
+
+- Divide the dataset into smaller subsets, each containing a fixed number of data points.      
+- Compute a local approximation of the kernel on each subset. This can be done using any kernel approximation method, such as the Nyström method or random Fourier features.   
+- Compute a similarity matrix between the subsets, based on the local approximations of the kernel. This can be done using any similarity measure, such as the Gaussian similarity measure.   
+- Use the similarity matrix to compute weights for each subset, based on its similarity to the other subsets.   
+- Combine the local approximations of the kernel by taking a weighted average, where the weights are determined by the similarity matrix.   
+
+This approach allows for the approximation of large-scale kernel methods with reduced computational cost, while still preserving the accuracy of the kernel approximation. The method has been shown to be effective for a range of kernel methods and datasets, and has the potential to be useful in a variety of machine learning applications.
+
+```{r, eval=FALSE}
+# Load required libraries
+library(kernlab)
+library(Matrix)
+
+# Generate sample data
+set.seed(123)
+X <- matrix(rnorm(1000), ncol = 10)
+
+# Set parameters
+n_subsets <- 10
+subset_size <- nrow(X) / n_subsets
+sigma <- 0.5
+
+# Divide dataset into subsets
+subsets <- split(X, rep(1:n_subsets, each = subset_size))
+
+# Compute local approximations of kernel on subsets
+Ks <- lapply(subsets, function(subset) as.matrix(kernlab::rbfdot(subset, subset, sigma)))
+
+# Compute similarity matrix between subsets
+S <- matrix(0, n_subsets, n_subsets)
+for (i in 1:n_subsets) {
+  for (j in i:n_subsets) {
+    s <- sum(Ks[[i]] * Ks[[j]]) / sqrt(sum(Ks[[i]]^2) * sum(Ks[[j]]^2))
+    S[i, j] <- s
+    S[j, i] <- s
+  }
+}
+
+# Compute weights for each subset
+w <- Matrix(0, nrow = length(subsets), ncol = length(subsets))
+for (i in 1:n_subsets) {
+  for (j in 1:n_subsets) {
+    w[i, j] <- S[i, j] / sum(S[i, ])
+  }
+}
+
+# Combine local approximations of kernel by taking weighted average
+K <- Matrix(0, nrow = nrow(X), ncol = nrow(X))
+for (i in 1:n_subsets) {
+  for (j in 1:n_subsets) {
+    K[((i-1)*subset_size + 1):(i*subset_size), ((j-1)*subset_size + 1):(j*subset_size)] <- w[i, j] * Ks[[i]]
+  }
+}
+
+# Test the kernel matrix on a support vector machine
+y <- c(rep(1, 5), rep(-1, 5))
+svm_model <- ksvm(X, y, kernel = "matrix", kpar = list("matrix" = K), C = 10)
+
+```
+
+> In this example, we first generate some sample data X, and set some parameters for the algorithm, including the number of subsets, subset size, and kernel bandwidth sigma. We then divide the dataset into subsets, compute local approximations of the kernel on each subset using the RBF kernel implemented in the kernlab package, and compute the similarity matrix between subsets. We use the similarity matrix to compute weights for each subset, and combine the local approximations of the kernel by taking a weighted average. Finally, we test the resulting kernel matrix on a support vector machine using the ksvm function from the kernlab package.
+
+## ALTERNATIVELY
+
+```{r, eval=FALSE}
+# Load required packages
+library(kernlab)
+library(Matrix)
+
+# Define the kernel function to be approximated (here, the radial basis function)
+kern_fun <- function(x, y, sigma = 1) exp(-sum((x - y)^2) / (2 * sigma^2))
+
+# Define the dataset and its size
+data <- matrix(rnorm(1000), ncol = 10)
+n <- nrow(data)
+
+# Define the number of subsets to use
+num_subsets <- 5
+
+# Define the subset size
+subset_size <- n / num_subsets
+
+# Divide the data into subsets
+subsets <- list()
+for (i in 1:num_subsets) {
+  start_idx <- (i - 1) * subset_size + 1
+  end_idx <- i * subset_size
+  subsets[[i]] <- data[start_idx:end_idx, ]
+}
+
+# Compute local kernel approximations on each subset
+local_kernels <- list()
+for (i in 1:num_subsets) {
+  local_kernel_matrix <- kernelMatrix(kernlab::as.kernelMatrix(subsets[[i]]), data, kernel = "rbfdot", kpar = list(sigma = 1))
+  local_kernels[[i]] <- Matrix(local_kernel_matrix)
+}
+
+# Compute similarity matrix between subsets
+similarity_matrix <- matrix(0, nrow = num_subsets, ncol = num_subsets)
+for (i in 1:num_subsets) {
+  for (j in 1:num_subsets) {
+    if (i == j) {
+      similarity_matrix[i, j] <- 1
+    } else {
+      similarity_matrix[i, j] <- sum(local_kernels[[i]] * local_kernels[[j]]) / (norm(local_kernels[[i]]) * norm(local_kernels[[j]]))
+    }
+  }
+}
+
+# Compute weights for each subset based on similarity matrix
+weights <- apply(similarity_matrix, 1, function(x) sum(x) / sum(similarity_matrix))
+
+# Combine local kernel approximations by taking weighted average
+global_kernel_matrix <- matrix(0, nrow = n, ncol = n)
+for (i in 1:num_subsets) {
+  global_kernel_matrix <- global_kernel_matrix + local_kernels[[i]] * weights[i]
+}
+global_kernel_matrix <- as.matrix(global_kernel_matrix)
+
+# Test the kernel approximation
+approximated_kernel <- apply(data, 1, function(x) apply(data, 1, function(y) kern_fun(x, y)))
+approximated_kernel <- as.matrix(approximated_kernel)
+approximated_kernel_error <- norm(approximated_kernel - global_kernel_matrix) / norm(approximated_kernel)
+print(paste0("Approximation error: ", approximated_kernel_error))
+
+```
+
+## Alternatively
+```{r, eval=FALSE}
+library(Matrix)
+
+# Function to compute a local approximation of the kernel using the Nyström method
+nystrom_kernel <- function(X, k, m) {
+  # Compute the kernel matrix for the full dataset
+  K <- kernel_matrix(X, X, k)
+  # Compute the eigen decomposition of the kernel matrix
+  e <- eigen(K)
+  # Select the top m eigenvectors and eigenvalues
+  V <- e$vectors[, 1:m]
+  D <- diag(e$values[1:m])
+  # Compute the approximation of the kernel on the subset
+  K_approx <- V %*% D %*% t(V)
+  return(K_approx)
+}
+
+# Function to compute the similarity matrix between subsets
+similarity_matrix <- function(K_subsets) {
+  # Compute the similarity between subsets using the Gaussian similarity measure
+  n_subsets <- length(K_subsets)
+  S <- matrix(0, n_subsets, n_subsets)
+  for (i in 1:n_subsets) {
+    for (j in 1:n_subsets) {
+      S[i, j] <- exp(-norm(K_subsets[[i]] - K_subsets[[j]], "F")^2)
+    }
+  }
+  return(S)
+}
+
+# Function to compute the weights for each subset
+subset_weights <- function(S) {
+  # Compute the weights based on the similarity matrix
+  n_subsets <- nrow(S)
+  w <- rep(1/n_subsets, n_subsets)
+  for (i in 1:n_subsets) {
+    w[i] <- sum(S[i,]) / sum(S)
+  }
+  return(w)
+}
+
+# Function to compute the kernel approximation using the divide and conquer approach
+divide_and_conquer_kernel <- function(X, k, m, n_subsets) {
+  # Divide the dataset into subsets
+  n <- nrow(X)
+  subset_size <- ceiling(n/n_subsets)
+  subsets <- split(X, rep(1:n_subsets, each = subset_size)[1:n])
+  # Compute the local approximations of the kernel on each subset
+  K_subsets <- lapply(subsets, nystrom_kernel, k = k, m = m)
+  # Compute the similarity matrix between subsets
+  S <- similarity_matrix(K_subsets)
+  # Compute the weights for each subset
+  w <- subset_weights(S)
+  # Combine the local approximations of the kernel using the weighted average
+  K <- Reduce(`+`, lapply(seq_along(K_subsets), function(i) w[i]*K_subsets[[i]]))
+  return(K)
+}
+
+```
+
+To use this implementation, you can call the divide_and_conquer_kernel function with the following arguments:
+
+- X: The data matrix.   
+- k: The kernel function, defined as a function that takes two vectors as input and returns a scalar.   
+- m: The number of eigenvectors to select for the Nyström approximation.   
+- n_subsets: The number of subsets to divide the dataset into.   
+
+Here is an example usage of the function:
+
+```{r, eval=FALSE}
+# Generate sample data
+n <- 1000
+d <- 10
+X <- matrix(rnorm(n*d), ncol = d)
+
+# Compute the kernel approximation using the divide and conquer approach
+K <- divide_and_conquer_kernel(X, k = function(x, y) exp(-sum((x-y)^2)), m = 100, n_subsets = 10)
+
+# Check the dimensions of the kernel matrix
+dim(K)
+```
+
+## Divide & Conquer for KRR
+```{r, eval=FALSE}
+library(Matrix)
+library(kernlab)
+
+# Define a function to approximate the kernel using the Nyström method
+nystrom_kernel_approximation <- function(X, k, m) {
+  # Compute the kernel matrix on a random subset of m data points
+  idx <- sample(1:nrow(X), m)
+  Kmm <- as.matrix(k(X[idx,], X[idx,]))
+  
+  # Compute the kernel matrix between the full dataset and the subset
+  Kmn <- as.matrix(k(X, X[idx,]))
+  
+  # Compute the Cholesky factorization of the subset kernel matrix
+  L <- chol(Kmm)
+  
+  # Compute the Nyström approximation of the full kernel matrix
+  Knm <- t(Kmn) %*% solve(L) %*% solve(t(L)) %*% Kmn
+  Knm <- as.matrix(Knm)
+  
+  return(Knm)
+}
+
+# Define a function to compute the kernel matrix using the divide and conquer approach
+dc_kernel_matrix <- function(X, k, m, subset_size) {
+  n <- nrow(X)
+  
+  # Divide the dataset into subsets of size subset_size
+  subset_indices <- split(1:n, rep(1:ceiling(n/subset_size), each = subset_size)[1:n])
+  
+  # Compute the local approximation of the kernel on each subset
+  local_kernels <- lapply(subset_indices, function(idx) nystrom_kernel_approximation(X[idx,], k, m))
+  
+  # Compute the similarity matrix between the subsets
+  sim_matrix <- matrix(0, length(subset_indices), length(subset_indices))
+  for (i in 1:(length(subset_indices)-1)) {
+    for (j in (i+1):length(subset_indices)) {
+      sim_matrix[i,j] <- sum(diag(local_kernels[[i]] %*% local_kernels[[j]])) / sqrt(sum(diag(local_kernels[[i]] %*% local_kernels[[i]])) * sum(diag(local_kernels[[j]] %*% local_kernels[[j]])))
+      sim_matrix[j,i] <- sim_matrix[i,j]
+    }
+  }
+  
+  # Compute the weights for each subset based on its similarity to the other subsets
+  weights <- apply(sim_matrix, 1, function(row) sum(row) / sum(row[row != 0]))
+  
+  # Combine the local approximations of the kernel by taking a weighted average
+  combined_kernel <- Reduce(`+`, lapply(seq_along(local_kernels), function(i) weights[i] * local_kernels[[i]]))
+  
+  return(combined_kernel)
+}
+
+# Generate some sample data
+set.seed(123)
+n <- 1000
+p <- 10
+X <- matrix(rnorm(n*p), n, p)
+y <- rnorm(n)
+
+# Define the kernel function
+k <- kernelMatrix("rbfdot", X, gamma = 1/p)
+
+# Compute the kernel matrix using the divide and conquer approach with subset size of 100 and m = 50
+K_dc <- dc_kernel_matrix(X, k, m = 50, subset_size = 100)
+
+# Compute the kernel ridge regression solution using the combined kernel matrix
+alpha <- solve(K_dc + 0.01 * n * diag(n)) %*% y
+
+# Compute the predicted values for the training data
+y_pred <- K_dc %*% alpha
+
+# Compute the mean squared error
+mse <- mean((y - y_pred)^2)
+print(paste("MSE:", mse))
+
+```
+
+
+# (9)--------------- Using ADMM ------
+
+## Approach
+Distributed ADMM (Alternating Direction Method of Multipliers) can be used to solve Kernel Ridge Regression for large scale datasets that cannot be processed on a single machine. The basic idea of distributed ADMM is to split the dataset across multiple machines, perform local updates on each machine, and then communicate the updates across the machines to obtain a global solution. Here's an implementation of distributed ADMM for Kernel Ridge Regression in R.
+
+
+### Math
+
+```{r, eval=FALSE}
+library(parallel)
+library(kernlab)
+
+# Generate some sample data
+set.seed(123)
+n <- 1000
+p <- 100
+X <- matrix(rnorm(n*p), n, p)
+y <- rnorm(n)
+
+
+# Define the kernel function
+kern   <- rbfdot(sigma=1/p)
+k      <- kernelMatrix(kern, X)
+
+# Define the distributed ADMM algorithm
+distributed_admm <- function(X, y, k, lambda, rho, num_iterations, num_workers) {
+  n <- nrow(X)
+  p <- ncol(X)
+  
+  # Split the dataset into equal-sized chunks
+  chunk_size <- ceiling(n / num_workers)
+  chunks <- split(1:n, rep(1:num_workers, each = chunk_size)[1:n])
+  
+  # Initialize variables
+  alpha <- matrix(0, n, 1)
+  u <- matrix(0, n, num_workers)
+  z <- matrix(0, n, num_workers)
+  
+  # Compute the inverse of the local kernel matrices
+  inv_k <- lapply(chunks, function(idx) solve(k[idx,idx] + (rho/2) * diag(chunk_size)))
+  
+  # Define the local updates function
+  local_update <- function(chunk_idx, chunk, alpha, u, z) {
+    # Compute the local residual and update u
+    r <- y[chunk_idx] - k[chunk_idx,] %*% alpha - z[chunk_idx,] + u[chunk_idx,]
+    u[chunk_idx,] <- u[chunk_idx,] + r
+    
+    # Update alpha
+    alpha[chunk_idx,] <- inv_k[[chunk_idx]] %*% (k[chunk_idx,] %*% alpha + r - z[chunk_idx,] + u[chunk_idx,])
+    
+    # Update z
+    z[chunk_idx,] <- (rho / (rho + 1)) * (k[chunk_idx,] %*% alpha + u[chunk_idx,])
+    
+    return(list(alpha = alpha, u = u, z = z))
+  }
+  
+  # Run the distributed ADMM algorithm
+  for (iter in 1:num_iterations) {
+    # Parallelize the local updates across workers
+    local_results <- mclapply(seq_along(chunks), function(i) local_update(chunks[[i]], X[chunks[[i]],], alpha, u, z), mc.cores = num_workers)
+    
+    # Combine the local updates
+    alpha <- Reduce(`+`, lapply(local_results, function(result) result$alpha))
+    u <- Reduce(`+`, lapply(local_results, function(result) result$u))
+    z <- Reduce(`+`, lapply(local_results, function(result) result$z))
+    
+    # Apply the global consensus step
+    alpha <- alpha / num_workers
+    u <- u / num_workers
+    z <- z / num_workers
+  }
+  
+  return(alpha)
+}
+
+# Run the distributed ADMM algorithm with 4 workers, lambda = 0.01, rho = 1, and 10 iterations
+num_workers <- 4
+lambda <- 0.01
+rho <- 1
+num_iterations <- 10
+alpha <- distributed_admm(X, y, k, lambda, rho, num_iterations, num_workers)
+
+# Compute the predictions and mean squared error
+y_pred <- k %*% alpha
+mse <- mean((y - y_pred)^2)
+print(paste("MSE:", mse))
+
+```
+
+> In this implementation, we split the dataset into equal-sized chunks and perform local updates on each chunk using the kernel matrix and its inverse. We then combine the local updates by averaging them, and apply a global consensus step to obtain the next iteration. The process is repeated for a fixed number of iterations. Finally, we compute the predictions and mean squared error using the obtained alpha values.
+
+> You can experiment with different values of num_workers, lambda, rho, and num_iterations to optimize the performance of the algorithm for your dataset. Note that the optimal values may depend on the size and characteristics of your dataset, as well as the computing resources available.
+
+## CODE 2
+```{r, eval=FALSE}
+library(Matrix)
+library(kernlab)
+
+# Define the KRR problem
+n <- 10000  # number of samples
+m <- 4      # number of partitions
+d <- 10     # number of features
+C <- 0.1    # regularization parameter
+rho <- 1    # penalty parameter
+eps <- 1e-3 # tolerance
+
+# Generate random data
+X <- matrix(rnorm(n * d), n, d)
+y <- rnorm(n)
+
+# Define the kernel matrix
+kern   <- rbfdot(sigma=1/d)
+K      <- kernelMatrix(kern, X)
+
+# Divide the dataset into partitions
+partition_size <- ceiling(n/m)
+partitions <- split(1:n, rep(1:m, each = partition_size, length.out = n))
+
+# Initialize variables
+w <- rep(0, d)
+b <- 0
+z <- rep(0, d)
+u <- matrix(0, partition_size, d)
+
+# Define the objective function
+objective <- function(w, b, z, u) {
+  sum((y - X %*% w - b)^2) / n + C/2 * sum(z^2) + rho/2 * sum((w - z + u)^2)
+}
+
+# Define the sub-problems
+sub_problems <- function(partition) {
+  Ki <- K[partition, partition]
+  Xi <- X[partition,]
+  yi <- y[partition]
+  
+  # Define the sub-objective function
+  sub_objective <- function(wi, bi, zi, ui) {
+    sum((yi - Xi %*% wi - bi)^2) / length(partition) + C/2 * sum(zi^2) + rho/2 * sum((wi - zi + ui)^2)
+  }
+  
+  # Define the sub-gradient function
+  sub_gradient <- function(wi, bi, zi, ui) {
+    grad_wi <- t(Xi) %*% (Xi %*% wi + bi - yi) / length(partition) + rho * (wi - zi + ui)
+    grad_bi <- sum(Xi %*% wi + bi - yi) / length(partition)
+    grad_zi <- C * zi - rho * (wi - zi + ui)
+    list(grad_wi, grad_bi, grad_zi)
+  }
+  
+  # Solve the sub-problem using ADMM
+  wi <- rep(0, d)
+  bi <- 0
+  zi <- rep(0, d)
+  ui <- matrix(0, length(partition), d)
+  for (iter in 1:100) {
+    # Update wi, bi, and zi
+    grad <- sub_gradient(wi, bi, zi, ui)
+    wi <- solve(Ki + rho * diag(d)) %*% (t(Xi) %*% (yi - bi) + rho * (zi - ui) + grad[[1]])
+    bi <- bi + grad[[2]]
+    zi <- soft_threshold(wi + ui, C/rho)
+    
+    # Update ui
+    ui <- ui + wi - zi
+    
+    # Check for convergence
+    if (sqrt(sum((wi - zi)^2)) < eps) {
+      break
+    }
+  }
+  
+  list(wi, bi, zi)
+}
+
+# Define the soft-thresholding function
+soft_threshold <- function(x, alpha) {
+  sign(x) * pmax(abs(x) - alpha, 0)
+}
+
+# Run the distributed ADMM algorithm
+for (iter in 1:100) {
+  # Update w and b
+  w_old <- w
+  b_old <- b
+  w <- matrix(0, d, m)
+  b <- 0
+  for (j in 1:m) {
+    sub_sol <- sub_problems(partitions[[j]])
+    w[,j] <- sub_sol[[1]]
+    b <- b + sub_sol[[2]]
+    z_j <- sub_sol[[3]]
+    u[(j-1)*partition_size + 1:j*partition_size,] <- u[(j-1)*partition_size + 1:j*partition_size,] + w[,j] - z_j
+  }
+  b <- b / m
+  
+  # Update z and u
+  z <- colMeans(w + u, na.rm = TRUE)
+  u <- u + w - matrix(rep(z, m), nrow = n, byrow = TRUE)
+  
+  # Check for convergence
+  if (sqrt(sum((w_old - w)^2)) < eps && abs(b_old - b) < eps) {
+    break
+  }
+}
+
+# Compute the final solution
+KX <- K %*% X
+y_hat <- KX %*% w %*% rep(1/m, m) + b
+mse <- sum((y - y_hat)^2) / n
+cat("MSE:", mse)
+
+
+```
+
+## With MapReduce
+```{r, eval=FALSE}
+library(pbdDMAT)
+library(pbdMPI)
+
+# Define the soft-thresholding function
+soft_threshold <- function(x, alpha) {
+  sign(x) * pmax(abs(x) - alpha, 0)
+}
+
+# Define the sub-problem solver function
+sub_problems <- function(partition, rho, lambda) {
+  n <- dim(partition)[1]
+  d <- dim(partition)[2] - 1
+  
+  K <- as.matrix(partition[,-(d+1)])
+  y <- as.vector(partition[,d+1])
+  
+  # Initialize variables
+  w <- matrix(0, d, 1)
+  b <- 0
+  z <- matrix(0, d, 1)
+  u <- matrix(0, d, 1)
+  
+  # Compute constants used in sub-problem
+  K_diag <- diag(K)
+  KX <- t(K) %*% K + n*rho*diag(rep(1,d))
+  Ky <- t(K) %*% y
+  
+  # Run the sub-problem solver
+  for (iter in 1:100) {
+    w_old <- w
+    b_old <- b
+    
+    # Update w
+    w <- solve(KX, Ky + rho*z - u)
+    
+    # Update b
+    b <- mean(y - K %*% w)
+    
+    # Update z
+    z <- soft_threshold(w + u/rho, lambda/rho)
+    
+    # Update u
+    u <- u + rho*(w - z)
+    
+    # Check for convergence
+    if (sqrt(sum((w_old - w)^2)) < 1e-6 && abs(b_old - b) < 1e-6) {
+      break
+    }
+  }
+  
+  # Return the solution and intermediate variables
+  list(w, b, z)
+}
+
+# Define the MapReduce function
+map_reduce_krr <- function(data, rho, lambda, mappers = mpi.comm.size() - 1) {
+  # Initialize variables
+  n <- dim(data)[1]
+  d <- dim(data)[2] - 1
+  partition_size <- ceiling(n/mappers)
+  partitions <- split(data, rep(1:mappers, each = partition_size)[1:n])
+  w <- matrix(0, d, mappers)
+  b <- rep(0, mappers)
+  z <- matrix(0, d, mappers)
+  u <- matrix(0, d, mappers)
+  
+  # Run the distributed ADMM algorithm
+  for (iter in 1:100) {
+    # Map step
+    map_results <- pbdDMAT::map.partitions(partitions, sub_problems, rho = rho, lambda = lambda)
+    w <- t(sapply(map_results, function(x) x[[1]]))
+    b <- sapply(map_results, function(x) x[[2]])
+    z <- t(sapply(map_results, function(x) x[[3]]))
+    
+    # Reduce step
+    w <- pbdMPI::allreduce(w, op = "sum")
+    b <- pbdMPI::allreduce(b, op = "sum") / mappers
+    z <- pbdMPI::allreduce(z, op = "sum")
+    
+    # Update u
+    u <- u + w - z
+    
+    # Check for convergence
+    if (sqrt(sum((w - t(w[,1]))^2)) < 1e-6 && abs(b - b[1]) < 1e-6) {
+      break
+      }
+  }
+  # Return the final solution
+  list(w = w[,1], b = b[1])
+}
+
+# Load the dataset
+data <- read.csv("data.csv", header = TRUE)
+
+# Set the regularization parameter
+lambda <- 1
+
+# Set the penalty parameter
+rho <- 1
+
+# Run the distributed ADMM algorithm
+result <- map_reduce_krr(data, rho = rho, lambda = lambda)
+
+# Print the final solution
+cat("w:", result$w, "\n")
+cat("b:", result$b, "\n")
+```
+
+> Note that this code assumes that the dataset is stored in a CSV file named "data.csv" in the working directory, and that the file has a header row. Also, the code uses the pbdDMAT and pbdMPI libraries for parallel processing. You will need to have these libraries installed and configured properly in your environment to run the code.
+
+
+
+
+```{r}
+library(ggplot2)
+
+x <- seq(-3, 3, length.out = 100)
+y <- seq(-3, 3, length.out = 100)
+z <- outer(x, y, function(x, y) x^2 + y^2)
+df <- reshape2::melt(z)
+names(df) <- c("x", "y", "z")
+
+ggplot(df, aes(x, y, z = z)) +
+  geom_contour() +
+  scale_fill_gradient(low = "white", high = "blue") +
+  theme_bw()
+```
+
+```{r}
+#------------ KRR
+# Load the necessary packages
+library(KernSmooth)
+library(ggplot2)
+
+# Generate some sample data
+set.seed(123)
+x <- seq(-5, 5, length.out = 100)
+y <- sin(x) + rnorm(100, 0, 0.2)
+
+# Define the kernel function
+kernel_func <- "rbfdot"
+
+# Set the tuning parameter for the regularization strength and the kernel width
+lambda <- 0.01
+sigma <- 0.5
+
+# Fit the kernel ridge regression model
+fit <- krr(x, y, kernel = kernel_func, lambda = lambda, sigma = sigma)
+
+# Predict the response variable for new values of x
+x_new <- seq(-6, 6, length.out = 200)
+y_pred <- predict.krr(fit, x_new)
+
+# Plot the data and the kernel ridge regression line
+df <- data.frame(x = x_new, y = y_pred)
+ggplot(data = data.frame(x, y), aes(x, y)) +
+  geom_point() +
+  geom_line(data = df, aes(x, y), color = "blue")
+
+```
+
+
+
+
+
+```{r}
+#------- ANother ADMM KRR
+# Define the Gaussian kernel function
+gaussian_kernel <- function(x, y, sigma) {
+  -exp(-sum((x - y)^2) / (2 * sigma^2))
+}
+
+# Define the ADMM algorithm for distributed KRR
+distributed_admm_krr <- function(X_list, y_list, lambda, rho, sigma, T) {
+  # Initialize the weight and auxiliary variables
+  n <- length(X_list)
+  p <- ncol(X_list[[1]])
+  w <- matrix(0, p, 1)
+  z <- matrix(0, p, 1)
+  u_list <- lapply(1:n, function(i) matrix(0, p, 1))
+  
+  # Run the ADMM algorithm for T iterations
+  for (t in 1:T) {
+    # Update the local weight vectors at each node
+    w_list <- lapply(1:n, function(i) {
+      X_i <- X_list[[i]]
+      y_i <- y_list[[i]]
+      K_i <- matrix(0, nrow(X_i), nrow(X_i))
+      for (j in 1:nrow(X_i)) {
+        for (k in 1:nrow(X_i)) {
+          K_i[j, k] <- gaussian_kernel(X_i[j, ], X_i[k, ], sigma)
+        }
+      }
+      w_i <- solve((K_i + rho * diag(nrow(X_i))) %*% t(X_i) %*% X_i + lambda * diag(ncol(X_i)), t(X_i) %*% y_i + rho * (z - u_list[[i]]))
+      return(w_i)
+    })
+    
+    # Broadcast the local weight vectors to all nodes
+    w_bar <- matrix(0, p, 1)
+    for (i in 1:n) {
+      w_bar <- w_bar + w_list[[i]]
+    }
+    w_bar <- w_bar / n
+    
+    # Update the local auxiliary variables at each node
+    z_list <- lapply(1:n, function(i) {
+      z_i <- w_bar + (1 / rho) * u_list[[i]]
+      return(z_i)
+    })
+    
+    # Update the local dual variables at each node
+    u_list <- lapply(1:n, function(i) {
+      u_i <- u_list[[i]] + rho * (w_list[[i]] - z_list[[i]])
+      return(u_i)
+    })
+    
+    # Update the global weight vector
+    w <- w_bar
+  }
+  
+  # Return the weight vector
+  return(w)
+}
+
+
+
+
+
+
+#---- test
+# Generate some random data
+n <- 4
+N <- 100
+p <- 10
+X <- lapply(1:n, function(i) matrix(rnorm(N * p), nrow = N))
+y <- lapply(1:n, function(i) matrix(rnorm(N), nrow = N))
+
+# Run the distributed ADMM algorithm
+lambda <- 1
+rho <- 0.1
+sigma <- 1
+T <- 100
+w <- distributed_admm_krr(X, y, lambda, rho, sigma, T)
+
+```
+
