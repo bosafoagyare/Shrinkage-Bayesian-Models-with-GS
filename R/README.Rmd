@@ -8,6 +8,9 @@ knitr::opts_chunk$set(highlight = FALSE, fig.path = "./inst/doc/paper/figure_")
 ```
 
 
+
+
+
 ## Summary
 
 In regression analysis with high-dimensional data, variable selection is an important step to (i) overcome computational problems, (ii) improve prediction performance by variance reduction, and (iii) increase interpretability of the resulting models due to the smaller number of variables.  However, robust methods are necessary to prevent outlying data points from distorting the results.  The add-on package `robustHD` for the statistical computing environment `R` provides functionality for robust linear 
